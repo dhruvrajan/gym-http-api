@@ -3,12 +3,16 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
 
+import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class GymClientTest {
-    GymClient client;
+    private GymClient client;
 
     @Rule
     public ExpectedException expected = ExpectedException.none();
@@ -37,23 +41,46 @@ public class GymClientTest {
     }
 
     @Test
-    public void envStep() {
+    public void envListAll() throws ServerException, BadRequestException, IOException {
+        Map<String, String> envs = client.envListAll();
+
+        for (String instanceId : envs.keySet()) {
+            assertEquals(8, instanceId.length());
+        }
     }
 
     @Test
-    public void envListAll() {
+    public void envActionSpaceInfo() throws BadRequestException, ServerException {
+        String instanceId = client.envCreate("CartPole-v0");
+        Map<String, String> info = client.envActionSpaceInfo(instanceId);
+
+        assertEquals(2, info.size());
     }
 
     @Test
-    public void envActionSpaceInfo() {
+    public void envActionSpaceSample() throws BadRequestException, ServerException {
+        String instanceId = client.envCreate("CartPole-v0");
+        Map<String, String> info = client.envActionSpaceInfo(instanceId);
+        String getAction = client.envActionSpaceSample(instanceId);
+
+        int n = Integer.parseInt(info.get("n"));
+        int action = Integer.parseInt(getAction);
+
+        assertTrue(action < n);
     }
 
     @Test
-    public void envActionSpaceSample() {
+    public void envStep() throws BadRequestException, ServerException {
+        String id = client.envCreate("CartPole-v0");
+
     }
 
     @Test
-    public void envActionSpaceContains() {
+    public void envActionSpaceContains() throws BadRequestException, ServerException {
+        String instanceId = client.envCreate("CartPole-v0");
+
+        assertTrue(client.envActionSpaceContains(instanceId, "1"));
+        assertFalse(client.envActionSpaceContains(instanceId, "2"));
     }
 
     @Test

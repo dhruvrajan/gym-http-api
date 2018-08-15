@@ -4,7 +4,6 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import okhttp3.ResponseBody;
 import retrofit2.Call;
-import retrofit2.HttpException;
 import retrofit2.Response;
 import retrofit2.Retrofit;
 import retrofit2.converter.gson.GsonConverterFactory;
@@ -14,29 +13,24 @@ import retrofit2.http.POST;
 import retrofit2.http.Path;
 
 import java.io.IOException;
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Iterator;
-import java.util.List;
+import java.util.*;
 import java.util.logging.Logger;
 
 
 interface GymRetrofit {
     @POST("/v1/envs/")
-    Call<ResponseBody> postEnv(@Body JsonObject data);
+    Call<ResponseBody> envCreate(@Body JsonObject data);
 
     @POST("/v1/envs/{id}/step/")
     Call<ResponseBody> envStep(@Body JsonObject data);
 
     @POST("/v1/envs/{id}/reset/")
-    Call<ResponseBody> envReset(@Path("id") String instanceId, @Body JsonObject data);
+    Call<ResponseBody> envReset(@Path("id") String instanceId);
 
     @GET("/v1/envs/")
-    Call<ResponseBody> getEnv();
+    Call<ResponseBody> envListAll();
 
-    @GET("/v1/envs/{id}/action_space/sample")
+    @GET("/v1/envs/{id}/action_space/")
     Call<ResponseBody> envActionSpaceInfo(@Path("id") String instanceId);
 
     @GET("/v1/envs/{id}/action_space/sample")
@@ -49,13 +43,20 @@ interface GymRetrofit {
     Call<ResponseBody> envObservationSpaceContains(@Path("id") String instanceId);
 }
 
-class BadRequestException extends Exception {
+class GymClientException extends Exception {
+    GymClientException(String message) {
+        super(message);
+    }
+}
+
+
+class BadRequestException extends GymClientException {
     BadRequestException(String message) {
         super(message);
     }
 }
 
-class ServerException extends Exception {
+class ServerException extends GymClientException {
     public int status;
 
     ServerException(String message, int status) {
@@ -65,7 +66,6 @@ class ServerException extends Exception {
 }
 
 public class GymClient {
-    private Retrofit retrofit;
     private GymRetrofit gymRetrofit;
     private static final Logger logger = Logger.getLogger(GymClient.class.getName());
 
@@ -77,9 +77,8 @@ public class GymClient {
         gymClient.envCreate(envId);
     }
 
-    public GymClient build(String remoteBase) throws MalformedURLException {
-        URL remoteBase1 = new URL(remoteBase);
-        retrofit = new Retrofit.Builder()
+    public GymClient build(String remoteBase) {
+        Retrofit retrofit = new Retrofit.Builder()
                 .baseUrl(remoteBase)
                 .addConverterFactory(GsonConverterFactory.create())
                 .build();
@@ -107,7 +106,7 @@ public class GymClient {
     public String envCreate(String envId) throws BadRequestException, ServerException {
         JsonObject json = new JsonObject();
         json.addProperty("env_id", envId);
-        Call<ResponseBody> request = gymRetrofit.postEnv(json);
+        Call<ResponseBody> request = gymRetrofit.envCreate(json);
 
         JsonObject returned = safeExecute(request, "failed to create environment " + envId);
         String instanceId = returned.get("instance_id").getAsString();
@@ -116,10 +115,21 @@ public class GymClient {
         return instanceId;
     }
 
+    public Map<String, String> envListAll() throws IOException, BadRequestException, ServerException {
+        Call<ResponseBody> request = gymRetrofit.envListAll();
+
+        JsonObject returned = safeExecute(request, "failed to get list of envs");
+
+        Map<String, String> allEnvs = new HashMap<>();
+        returned.getAsJsonObject("all_envs").entrySet()
+                .forEach(entry -> allEnvs.put(entry.getKey(), entry.getValue().getAsString()));
+
+        logger.info(String.format("retrieved list of %s environments", allEnvs.size()));
+        return allEnvs;
+    }
+
     public List<Double> envReset(String instanceId) throws BadRequestException, ServerException {
-        JsonObject json = new JsonObject();
-        json.addProperty("instance_id", instanceId);
-        Call<ResponseBody> request = gymRetrofit.envReset(instanceId, json);
+        Call<ResponseBody> request = gymRetrofit.envReset(instanceId);
 
         JsonObject returned = safeExecute(request, "failed to reset instance " + instanceId);
         JsonArray observation = returned.get("observation").getAsJsonArray();
@@ -131,41 +141,49 @@ public class GymClient {
         return obs;
     }
 
-//    public List<String> envStep(String instanceId, String action, boolean render) throws IOException {
-//        JsonObject json = new JsonObject();
-//        json.addProperty("action", action);
-//        json.addProperty("render", render);
-//
-//        Response response = gymRetrofit.envStep(json).execute();
-//        JsonObject parsed = parseResponse(response, String.format("take action %s on instance %s", action, instanceId));
-//        return Arrays.asList(
-//                parsed.get("observation").getAsString(),
-//                parsed.get("reward").getAsString(),
-//                parsed.get("done").getAsString(),
-//                parsed.get("info").getAsString()
-//        );
-//    }
-//
-//    public JsonElement envListAll() throws IOException {
-//        Response response = gymRetrofit.getEnv().execute();
-//        return parseResponse(response, "list all environments")
-//                .get("all_envs");
-//    }
-//
-//    public JsonElement envActionSpaceInfo(String instanceId) throws IOException {
-//        Response response = gymRetrofit.envActionSpaceInfo(instanceId).execute();
-//        return parseResponse(response, String.format("action space info for instance %s", instanceId));
-//    }
-//
-//    public JsonElement envActionSpaceSample(String instanceId) throws IOException {
-//        Response response = gymRetrofit.envActionSpaceSample(instanceId).execute();
-//        return parseResponse(response, String.format("action space sample for instance %s", instanceId));
-//    }
-//
-//    public JsonElement envActionSpaceContains(String instanceId, String x) throws IOException {
-//        Response response = gymRetrofit.envActionSpaceContains(instanceId, x).execute();
-//        return parseResponse(response, String.format("action space contains query for instance %s, query %s", instanceId, x));
-//    }
+    public List<String> envStep(String instanceId, String action, boolean render) throws IOException, BadRequestException, ServerException {
+        JsonObject json = new JsonObject();
+        json.addProperty("action", action);
+        json.addProperty("render", render);
+        Call<ResponseBody> request = gymRetrofit.envStep(json);
+
+        JsonObject returned = safeExecute(request, "failed to take action " + action + "on instance " + instanceId);
+
+        return Arrays.asList(
+                returned.get("observation").getAsString(),
+                returned.get("reward").getAsString(),
+                returned.get("done").getAsString(),
+                returned.get("info").getAsString()
+        );
+    }
+    public Map<String, String> envActionSpaceInfo(String instanceId) throws BadRequestException, ServerException {
+        Call<ResponseBody> request = gymRetrofit.envActionSpaceInfo(instanceId);
+
+        JsonObject returned = safeExecute(request, "failed to retrieve action space info for instance " + instanceId);
+
+        Map<String, String> info = new HashMap<>();
+        returned.getAsJsonObject("info").entrySet()
+                .forEach(entry -> info.put(entry.getKey(), entry.getValue().getAsString()));
+
+        return info;
+    }
+
+    public String envActionSpaceSample(String instanceId) throws BadRequestException, ServerException {
+        Call<ResponseBody> request = gymRetrofit.envActionSpaceSample(instanceId);
+
+        JsonObject returned = safeExecute(request, "failed to retrieve action space sample for instance " + instanceId);
+        return returned.get("action").getAsString();
+    }
+
+    public Boolean envActionSpaceContains(String instanceId, String x) throws BadRequestException, ServerException {
+        Call<ResponseBody> request = gymRetrofit.envActionSpaceContains(instanceId, x);
+
+        JsonObject returned = safeExecute(request, "failed to run action space contains query for instance " + instanceId + ", query " + x);
+        boolean member =  returned.get("member").getAsBoolean();
+
+        logger.info("found action " + x + " in action space of instance " + instanceId);
+        return member;
+    }
 //
 //    public JsonElement envObservationSpaceContains(String instanceId, JsonObject params) throws IOException {
 //        Response response = gymRetrofit.envObservationSpaceContains(instanceId).execute();
