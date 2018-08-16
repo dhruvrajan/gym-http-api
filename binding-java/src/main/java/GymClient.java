@@ -39,6 +39,9 @@ interface GymRetrofit {
     @GET("/v1/envs/{id}/action_space/contains/{x}")
     Call<ResponseBody> envActionSpaceContains(@Path("id") String instanceId, @Path("x") String x);
 
+    @GET("/v1/envs/{id}/observation_space/")
+    Call<ResponseBody> envObservationSpaceInfo(@Path("id") String instanceId);
+
     @GET("/v1/envs/{id}/observation_space/contains")
     Call<ResponseBody> envObservationSpaceContains(@Path("id") String instanceId);
 }
@@ -183,6 +186,27 @@ public class GymClient {
 
         logger.info("found action " + x + " in action space of instance " + instanceId);
         return member;
+    }
+
+    public Map<String, Object> envObservationSpaceInfo(String instanceId) throws BadRequestException, ServerException {
+        Call<ResponseBody> request = gymRetrofit.envObservationSpaceInfo(instanceId);
+
+        JsonObject returned = safeExecute(request, "failed to retrieve observation space info for instance " + instanceId);
+
+        Map<String, Object> info = new HashMap<>();
+
+
+        for (Map.Entry<String, JsonElement> entry : returned.getAsJsonObject("info").entrySet()) {
+            if (entry.getKey().equals("name")) {
+                info.put(entry.getKey(), entry.getValue().getAsString());
+            } else {
+                List<Double> arr = new ArrayList<>();
+                entry.getValue().getAsJsonArray().forEach(d -> arr.add(d.getAsDouble()));
+                info.put(entry.getKey(), arr);
+            }
+        }
+
+        return info;
     }
 //
 //    public JsonElement envObservationSpaceContains(String instanceId, JsonObject params) throws IOException {

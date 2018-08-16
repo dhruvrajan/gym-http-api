@@ -4,6 +4,7 @@ import org.junit.Test;
 import org.junit.rules.ExpectedException;
 
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -84,6 +85,15 @@ public class GymClientTest {
     }
 
     @Test
-    public void envObservationSpaceContains() {
+    public void envObservationSpaceInfo() throws BadRequestException, ServerException {
+        String instanceId = client.envCreate("CartPole-v0");
+        Map<String, String> f= new HashMap<>();
+        Map<String, Object> info = client.envObservationSpaceInfo(instanceId);
+
+        assertEquals(4, info.size());
+        assertTrue(info.get("name") instanceof String);
+        assertTrue(info.get("high") instanceof List);
+        assertTrue(info.get("low") instanceof List);
+        assertTrue(info.get("shape") instanceof List);
     }
 }
