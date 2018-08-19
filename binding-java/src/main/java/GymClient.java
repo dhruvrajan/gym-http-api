@@ -1,7 +1,4 @@
-import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
+import com.google.gson.*;
 import okhttp3.ResponseBody;
 import retrofit2.Call;
 import retrofit2.Response;
@@ -22,7 +19,7 @@ interface GymRetrofit {
     Call<ResponseBody> envCreate(@Body JsonObject data);
 
     @POST("/v1/envs/{id}/step/")
-    Call<ResponseBody> envStep(@Body JsonObject data);
+    Call<ResponseBody> envStep(@Path("id") String instanceId, @Body JsonObject data);
 
     @POST("/v1/envs/{id}/reset/")
     Call<ResponseBody> envReset(@Path("id") String instanceId);
@@ -42,8 +39,23 @@ interface GymRetrofit {
     @GET("/v1/envs/{id}/observation_space/")
     Call<ResponseBody> envObservationSpaceInfo(@Path("id") String instanceId);
 
-    @GET("/v1/envs/{id}/observation_space/contains")
-    Call<ResponseBody> envObservationSpaceContains(@Path("id") String instanceId);
+    @POST("/v1/envs/{id}/observation_space/contains")
+    Call<ResponseBody> envObservationSpaceContains(@Path("id") String instanceId, @Body JsonObject params);
+
+    @POST("v1/envs/{id}/monitor/start/")
+    Call<ResponseBody> envMonitorStart(@Path("id") String instanceId, @Body JsonObject data);
+
+    @POST("/v1/envs/{id}/monitor/close/")
+    Call<ResponseBody> envMonitorClose(@Path("id") String instanceId);
+
+    @POST("/v1/envs/{id}/close/")
+    Call<ResponseBody> envClose(@Path("id") String instanceId);
+
+    @POST("/v1/upload/")
+    Call<ResponseBody> upload(@Body JsonObject data);
+
+    @POST("/v1/shutdown/")
+    Call<ResponseBody> shutdownServer();
 }
 
 class GymClientException extends Exception {
@@ -93,9 +105,13 @@ public class GymClient {
         try {
             Response response = call.execute();
             if (response.isSuccessful()) {
-                JsonParser parser = new JsonParser();
-                ResponseBody body = (ResponseBody) response.body();
-                return parser.parse(body.string()).getAsJsonObject();
+                if (response.body() != null) {
+                    JsonParser parser = new JsonParser();
+                    ResponseBody body = (ResponseBody) response.body();
+                    return parser.parse(body.string()).getAsJsonObject();
+                } else {
+                    return new JsonObject();
+                }
             } else {
                 logger.severe(msgOnFail);
                 throw new ServerException(response.message(), response.code());
@@ -118,7 +134,7 @@ public class GymClient {
         return instanceId;
     }
 
-    public Map<String, String> envListAll() throws IOException, BadRequestException, ServerException {
+    public Map<String, String> envListAll() throws BadRequestException, ServerException {
         Call<ResponseBody> request = gymRetrofit.envListAll();
 
         JsonObject returned = safeExecute(request, "failed to get list of envs");
@@ -135,30 +151,49 @@ public class GymClient {
         Call<ResponseBody> request = gymRetrofit.envReset(instanceId);
 
         JsonObject returned = safeExecute(request, "failed to reset instance " + instanceId);
-        JsonArray observation = returned.get("observation").getAsJsonArray();
+        JsonElement observed = returned.get("observation");
+        List<Double> list = new ArrayList<>();
 
-        List<Double> obs = new ArrayList<>();
-        observation.forEach(jsonElement -> obs.add(jsonElement.getAsDouble()));
+        if (observed instanceof JsonArray) {
+            observed.getAsJsonArray().forEach(jsonElement -> list.add(jsonElement.getAsDouble()));
+        } else if (observed instanceof JsonPrimitive) {
+            list.add(observed.getAsDouble());
+        }
 
         logger.info("reset environment instance:" + instanceId);
-        return obs;
+        return list;
     }
 
-    public List<String> envStep(String instanceId, String action, boolean render) throws IOException, BadRequestException, ServerException {
+    public Map<String, Object> envStep(String instanceId, String action, boolean render) throws  BadRequestException, ServerException {
         JsonObject json = new JsonObject();
-        json.addProperty("action", action);
+        json.addProperty("action", Integer.parseInt(action));
         json.addProperty("render", render);
-        Call<ResponseBody> request = gymRetrofit.envStep(json);
+        Call<ResponseBody> request = gymRetrofit.envStep(instanceId, json);
 
-        JsonObject returned = safeExecute(request, "failed to take action " + action + "on instance " + instanceId);
+        JsonObject returned = safeExecute(request, "failed to take action " + action + " on instance " + instanceId);
 
-        return Arrays.asList(
-                returned.get("observation").getAsString(),
-                returned.get("reward").getAsString(),
-                returned.get("done").getAsString(),
-                returned.get("info").getAsString()
-        );
+        Map<String, Object> step = new HashMap<>();
+        List<Double> observation = new ArrayList<>();
+
+        if (returned.get("observation") instanceof JsonArray) {
+            returned.get("observation").getAsJsonArray().forEach(jsonElement ->
+                    observation.add(jsonElement.getAsDouble()));
+        } else if (returned.get("observation") instanceof JsonPrimitive){
+            observation.add(returned.get("observation").getAsDouble());
+        }
+
+        Map<String, String> info = new HashMap<>();
+        returned.getAsJsonObject("info").entrySet()
+                .forEach(entry -> info.put(entry.getKey(), entry.getValue().getAsString()));
+
+        step.put("observation", observation);
+        step.put("reward", returned.get("reward").getAsDouble());
+        step.put("done", returned.get("done").getAsBoolean());
+        step.put("info", info);
+
+        return step;
     }
+
     public Map<String, String> envActionSpaceInfo(String instanceId) throws BadRequestException, ServerException {
         Call<ResponseBody> request = gymRetrofit.envActionSpaceInfo(instanceId);
 
@@ -208,9 +243,42 @@ public class GymClient {
 
         return info;
     }
-//
-//    public JsonElement envObservationSpaceContains(String instanceId, JsonObject params) throws IOException {
-//        Response response = gymRetrofit.envObservationSpaceContains(instanceId).execute();
-//        return parseResponse(response, String.format("observation space contains for instance %s", instanceId));
-//    }
+
+    public Boolean envObservationSpaceContains(String instanceId, JsonObject params) throws BadRequestException, ServerException {
+        Call<ResponseBody> request = gymRetrofit.envObservationSpaceContains(instanceId, params);
+        JsonObject returned = safeExecute(request, "failed to run action space contains query for instance " + instanceId);
+        return returned.get("member").getAsBoolean();
+    }
+
+    public void envMonitorStart(String instanceId, String directory, boolean force, boolean resume, boolean videoCallable) throws BadRequestException, ServerException {
+        JsonObject data = new JsonObject();
+        data.addProperty("directory", directory);
+        data.addProperty("force", force);
+        data.addProperty("resume", resume);
+        data.addProperty("video_callable", videoCallable);
+
+        JsonObject returned = safeExecute(gymRetrofit.envMonitorStart(instanceId, data), "failed to start monitor at " + directory + " for instance " + instanceId);
+        System.out.print(returned);
+    }
+
+    public void envMonitorClose(String instanceId) throws BadRequestException, ServerException {
+        safeExecute(gymRetrofit.envMonitorClose(instanceId), "close monitor for id " + instanceId + "failed");
+    }
+
+    public void envClose(String instanceId) throws BadRequestException, ServerException {
+        safeExecute(gymRetrofit.envClose(instanceId), "failed to close monitor for instance " + instanceId);
+    }
+
+    public void upload(String trainingDirectory, String algorithmId, String apiKey) throws BadRequestException, ServerException {
+        JsonObject data = new JsonObject();
+        data.addProperty("training_dir", trainingDirectory);
+        data.addProperty("algorithm_id", algorithmId);
+        data.addProperty("api_key", apiKey);
+
+        safeExecute(gymRetrofit.upload(data), "failed to upload to directory " + trainingDirectory);
+    }
+
+    public void shutdownServer() throws BadRequestException, ServerException {
+        safeExecute(gymRetrofit.shutdownServer(), "failed to shutdown server");
+    }
 }
